@@ -1,1 +1,6 @@
 /target
+/data/input.txt
+blog_post
+dhat-heap.json
+flamegraph.svg
+perf.data*
