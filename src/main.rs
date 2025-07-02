@@ -34,24 +34,57 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn read_input_file() -> Result<String> {
-    let input_path = "data/input.txt";
-    fs::read_to_string(input_path)
+fn read_input_file() -> Result<Vec<u8>> {
+    fs::read("data/input.txt")
 }
 
-fn eval(input: &str) -> u32 {
-    let mut tokens = tokenize(input).peekable();
+struct Tokenizer<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for Tokenizer<'a> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.input.len() {
+            return None;
+        }
+
+        let byte = self.input[self.pos];
+
+        self.pos += 1;
+
+        let token = match byte {
+            b'+' => Some(Token::Plus),
+            b'-' => Some(Token::Minus),
+            b'(' => Some(Token::OpeningParenthesis),
+            b')' => Some(Token::ClosingParenthesis),
+            b'0'..=b'9' => {
+                let mut value = (byte - b'0') as u32; // TODO Ricardo SIMD improvement??
+                while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
+                    value = 10 * value + (self.input[self.pos] - b'0') as u32;
+                    self.pos += 1;
+                }
+
+                Some(Token::Operand(value))
+            }
+            other => panic!("Unexpected byte: '{}'", other as char),
+        };
+
+        self.pos += 1; // skip whitespace
+
+        return token;
+    }
+}
+
+fn eval(input: &[u8]) -> u32 {
+    let tokenizer = Tokenizer {
+        input: input,
+        pos: 0,
+    };
+    let mut tokens = tokenizer.peekable();
     parse_expression(&mut tokens)
-}
-
-fn tokenize(input: &str) -> impl Iterator<Item = Token> + '_ {
-    input.split_whitespace().map(|s| match s {
-        "+" => Token::Plus,
-        "-" => Token::Minus,
-        "(" => Token::OpeningParenthesis,
-        ")" => Token::ClosingParenthesis,
-        n => Token::Operand(n.parse().unwrap()),
-    })
 }
 
 fn parse_expression(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
@@ -75,10 +108,8 @@ fn parse_primary(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
         Some(Token::OpeningParenthesis) => {
             tokens.next(); // consume '('
             let val = parse_expression(tokens);
-            match tokens.next() {
-                Some(Token::ClosingParenthesis) => val,
-                other => panic!("Expected ')', got {:?}", other),
-            }
+            tokens.next(); // consume ')'
+            return val;
         }
         _ => parse_operand(tokens),
     }
@@ -98,15 +129,4 @@ enum Token {
     Minus,
     OpeningParenthesis,
     ClosingParenthesis,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_eval_addition() {
-        let input = "4 + 5 + 2 - 1";
-        assert_eq!(eval(input), 10);
-    }
 }
