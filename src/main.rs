@@ -110,5 +110,3 @@ mod tests {
         assert_eq!(eval(input), 10);
     }
 }
-
-// TODO RIcardo max performance and less memory usage
