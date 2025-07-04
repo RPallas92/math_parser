@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Result;
-use std::{iter::Peekable, time::Instant};
+use std::time::Instant;
 
 /*#[cfg(debug_assertions)]
 use dhat;
@@ -79,23 +79,27 @@ impl<'a> Iterator for Tokenizer<'a> {
 }
 
 fn eval(input: &[u8]) -> u32 {
-    let tokenizer = Tokenizer {
+    let mut tokenizer = Tokenizer {
         input: input,
         pos: 0,
     };
-    let mut tokens = tokenizer.peekable();
-    parse_expression(&mut tokens)
+    parse_expression(&mut tokenizer)
 }
 
-fn parse_expression(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
+fn parse_expression(tokens: &mut impl Iterator<Item = Token>) -> u32 {
     let mut left = parse_primary(tokens);
 
-    while let Some(Token::Plus) | Some(Token::Minus) = tokens.peek() {
-        let operator: Option<Token> = tokens.next();
+    // TODO ricardo next optimization. do not use peekable, and do not use peek, just iterate and if the token is not operand, break. then match on the operand
+
+    while let Some(token) = tokens.next() {
+        if token == Token::ClosingParenthesis {
+            break;
+        }
+
         let right = parse_primary(tokens);
-        left = match operator {
-            Some(Token::Plus) => left + right,
-            Some(Token::Minus) => left - right,
+        left = match token {
+            Token::Plus => left + right,
+            Token::Minus => left - right,
             other => panic!("Expected operator, got {:?}", other),
         }
     }
@@ -103,20 +107,12 @@ fn parse_expression(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
     return left;
 }
 
-fn parse_primary(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
-    match tokens.peek() {
+fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> u32 {
+    match tokens.next() {
         Some(Token::OpeningParenthesis) => {
-            tokens.next(); // consume '('
             let val = parse_expression(tokens);
-            tokens.next(); // consume ')'
             return val;
         }
-        _ => parse_operand(tokens),
-    }
-}
-
-fn parse_operand(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> u32 {
-    match tokens.next() {
         Some(Token::Operand(n)) => n,
         other => panic!("Expected number, got {:?}", other),
     }
