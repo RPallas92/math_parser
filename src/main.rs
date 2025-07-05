@@ -62,30 +62,8 @@ impl<'a> Iterator for Tokenizer<'a> {
             b'(' => Some(Token::OpeningParenthesis),
             b')' => Some(Token::ClosingParenthesis),
             b'0'..=b'9' => {
-                let length = integer_len(self.input, byte_pos);
-
-                let value = match length {
-                    1 => (self.input[byte_pos] - b'0') as u32,
-                    2 => {
-                        ((self.input[byte_pos] - b'0') as u32 * 10)
-                            + (self.input[byte_pos + 1] - b'0') as u32
-                    }
-                    3 => {
-                        ((self.input[byte_pos] - b'0') as u32 * 100)
-                            + ((self.input[byte_pos + 1] - b'0') as u32 * 10)
-                            + (self.input[byte_pos + 2] - b'0') as u32
-                    }
-                    4 => {
-                        ((self.input[byte_pos] - b'0') as u32 * 1000)
-                            + ((self.input[byte_pos + 1] - b'0') as u32 * 100)
-                            + ((self.input[byte_pos + 2] - b'0') as u32 * 10)
-                            + (self.input[byte_pos + 3] - b'0') as u32
-                    }
-                    _ => unreachable!(),
-                };
-
+                let (value, length) = parse_integer(&self.input[byte_pos..]);
                 self.pos += length - 1;
-
                 Some(Token::Operand(value))
             }
             other => panic!("Unexpected byte: '{}'", other as char),
@@ -137,29 +115,44 @@ fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> u32 {
     }
 }
 
-// Accepts a byte slice of var length and returns the number of digits the number starting at the first byte has (pos).
-// It supports between 1 and 4 digits numbers.
-fn integer_len(input: &[u8], pos: usize) -> usize {
-    let s = &input[pos..];
-
+/// Parses an integer from the start of a slice using SWAR techniques.
+/// Returns the parsed value and the number of bytes consumed.
+fn parse_integer(s: &[u8]) -> (u32, usize) {
+    // Step 1: Read up to 4 bytes from the slice.
     let chunk = if s.len() >= 4 {
+        // Fast path: read directly from the slice if there's enough room.
         unsafe { std::ptr::read_unaligned(s.as_ptr() as *const u32) }
     } else {
-        let mut bytes = [b' '; 4];
+        // Slow path: copy to a padded buffer for the end of the file.
+        let mut bytes = [b' '; 4]; // Pad with a non-digit
         bytes[..s.len()].copy_from_slice(s);
         u32::from_le_bytes(bytes)
     };
 
+    // Step 2: Find the length of the number (1-4) using bitmasking.
     let mask = chunk.wrapping_sub(0x30303030);
     let non_digits_mask = (mask | mask.wrapping_add(0x76767676)) & 0x80808080;
-
     let length = (non_digits_mask.trailing_zeros() / 8) as usize;
 
-    // TODO Ricardo wjhy not putting the numbers in the back [x,x, 1, 2] so we can parse the nbumber like 1 * 10 + 2 (and the non numbers anre trnasformed to 0)
+    // Step 3: Right-align the digits and convert from ASCII to integer values.
+    // This implements the "delete and shift" idea.
+    let shift = (4 - length) * 8;
+    // Shift the ASCII digits to the right, leaving garbage on the left.
+    let aligned_chunk = chunk << shift;
+    // Create a subtraction mask that is also shifted.
+    let sub_mask = 0x30303030 << shift;
+    // Subtract to convert from ASCII. The garbage on the left is irrelevant.
+    let digits = aligned_chunk.wrapping_sub(sub_mask);
 
-    return length; // TODO Ricardo instead of match length in the caller, can we use the tree fold with bitmasking like in the article?
+    // Step 4: Parse the number from the bytes using a parallel, tree-like approach.
+    let lower_digits = digits & 0x00ff00ff;
+    let upper_digits = (digits >> 8) & 0x00ff00ff;
+    let temp = lower_digits + upper_digits * 10;
+
+    let value = ((temp & 0x0000ffff) + (temp >> 16) * 100) as u32;
+
+    (value, length)
 }
-
 // TODO RICSRDO COMPARE WITH PREVIOUS IMPL BUT USE as U32 otherwise it fails!!!!!!!!!!!!!!!!!!!!!!!!!
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // !!!!!!!!!!!!!!!!!!!
