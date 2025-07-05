@@ -52,6 +52,7 @@ impl<'a> Iterator for Tokenizer<'a> {
         }
 
         let byte = self.input[self.pos];
+        let byte_pos = self.pos;
 
         self.pos += 1;
 
@@ -61,11 +62,29 @@ impl<'a> Iterator for Tokenizer<'a> {
             b'(' => Some(Token::OpeningParenthesis),
             b')' => Some(Token::ClosingParenthesis),
             b'0'..=b'9' => {
-                let mut value = (byte - b'0') as u32; // TODO Ricardo SIMD improvement??
-                while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
-                    value = 10 * value + (self.input[self.pos] - b'0') as u32;
-                    self.pos += 1;
-                }
+                let length = integer_len(self.input, byte_pos);
+
+                let value = match length {
+                    1 => (self.input[byte_pos] - b'0') as u32,
+                    2 => {
+                        ((self.input[byte_pos] - b'0') as u32 * 10)
+                            + (self.input[byte_pos + 1] - b'0') as u32
+                    }
+                    3 => {
+                        ((self.input[byte_pos] - b'0') as u32 * 100)
+                            + ((self.input[byte_pos + 1] - b'0') as u32 * 10)
+                            + (self.input[byte_pos + 2] - b'0') as u32
+                    }
+                    4 => {
+                        ((self.input[byte_pos] - b'0') as u32 * 1000)
+                            + ((self.input[byte_pos + 1] - b'0') as u32 * 100)
+                            + ((self.input[byte_pos + 2] - b'0') as u32 * 10)
+                            + (self.input[byte_pos + 3] - b'0') as u32
+                    }
+                    _ => unreachable!(),
+                };
+
+                self.pos += length - 1;
 
                 Some(Token::Operand(value))
             }
@@ -118,6 +137,33 @@ fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> u32 {
     }
 }
 
+// Accepts a byte slice of var length and returns the number of digits the number starting at the first byte has (pos).
+// It supports between 1 and 4 digits numbers.
+fn integer_len(input: &[u8], pos: usize) -> usize {
+    let s = &input[pos..];
+
+    let chunk = if s.len() >= 4 {
+        unsafe { std::ptr::read_unaligned(s.as_ptr() as *const u32) }
+    } else {
+        let mut bytes = [b' '; 4];
+        bytes[..s.len()].copy_from_slice(s);
+        u32::from_le_bytes(bytes)
+    };
+
+    let mask = chunk.wrapping_sub(0x30303030);
+    let non_digits_mask = (mask | mask.wrapping_add(0x76767676)) & 0x80808080;
+
+    let length = (non_digits_mask.trailing_zeros() / 8) as usize;
+
+    // TODO Ricardo wjhy not putting the numbers in the back [x,x, 1, 2] so we can parse the nbumber like 1 * 10 + 2 (and the non numbers anre trnasformed to 0)
+
+    return length; // TODO Ricardo instead of match length in the caller, can we use the tree fold with bitmasking like in the article?
+}
+
+// TODO RICSRDO COMPARE WITH PREVIOUS IMPL BUT USE as U32 otherwise it fails!!!!!!!!!!!!!!!!!!!!!!!!!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// !!!!!!!!!!!!!!!!!!!
+
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Operand(u32),
@@ -125,4 +171,20 @@ enum Token {
     Minus,
     OpeningParenthesis,
     ClosingParenthesis,
+}
+
+// let's say we support a variable length of between 1 and 4 digts
+
+// https://rust-malaysia.github.io/code/2020/07/11/faster-integer-parsing.html
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hack() {
+        let input = "123".as_bytes();
+        let result = integer_len(input, 0);
+        assert_eq!(result, 3);
+    }
 }
