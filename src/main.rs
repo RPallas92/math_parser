@@ -1,6 +1,13 @@
+use rayon::prelude::*;
 use std::fs;
 use std::io::Result;
 use std::time::Instant;
+
+// We must use the x86-64 architecture for AVX-512.
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+const NUM_THREADS: usize = 8;
 
 /*#[cfg(debug_assertions)]
 use dhat;
@@ -19,7 +26,7 @@ fn main() -> Result<()> {
     println!("Step 1: Input file read in {:?}", step_start.elapsed());
 
     step_start = Instant::now();
-    let result = eval(&input);
+    let result = parallel_eval(&input, NUM_THREADS);
     println!(
         "Step 2: Calculation completed in {:?}",
         step_start.elapsed()
@@ -36,6 +43,31 @@ fn main() -> Result<()> {
 
 fn read_input_file() -> Result<Vec<u8>> {
     fs::read("data/input.txt")
+}
+
+/// Orchestrates parallel processing.
+fn parallel_eval(input: &[u8], num_threads: usize) -> i32 {
+    if num_threads <= 1 || input.len() < 1000 {
+        return eval(input);
+    }
+
+    let split_indices = unsafe { find_best_split_indices_simd(input, num_threads - 1) };
+
+    if split_indices.is_empty() {
+        return eval(input);
+    }
+
+    let mut chunks = Vec::with_capacity(NUM_THREADS);
+    let mut last_idx = 0;
+    for &idx in &split_indices {
+        chunks.push(&input[last_idx..idx - 1]);
+        last_idx = idx + 2;
+    }
+    chunks.push(&input[last_idx..]);
+
+    let chunk_results: Vec<i32> = chunks.par_iter().map(|&chunk| eval(chunk)).collect();
+
+    chunk_results.into_iter().sum()
 }
 
 struct Tokenizer<'a> {
@@ -61,9 +93,9 @@ impl<'a> Iterator for Tokenizer<'a> {
             b'(' => Some(Token::OpeningParenthesis),
             b')' => Some(Token::ClosingParenthesis),
             b'0'..=b'9' => {
-                let mut value = (byte - b'0') as u32; // TODO Ricardo SIMD improvement??
+                let mut value = (byte - b'0') as i32;
                 while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
-                    value = 10 * value + (self.input[self.pos] - b'0') as u32;
+                    value = 10 * value + (self.input[self.pos] - b'0') as i32;
                     self.pos += 1;
                 }
 
@@ -78,7 +110,7 @@ impl<'a> Iterator for Tokenizer<'a> {
     }
 }
 
-fn eval(input: &[u8]) -> u32 {
+fn eval(input: &[u8]) -> i32 {
     let mut tokenizer = Tokenizer {
         input: input,
         pos: 0,
@@ -86,10 +118,8 @@ fn eval(input: &[u8]) -> u32 {
     parse_expression(&mut tokenizer)
 }
 
-fn parse_expression(tokens: &mut impl Iterator<Item = Token>) -> u32 {
+fn parse_expression(tokens: &mut impl Iterator<Item = Token>) -> i32 {
     let mut left = parse_primary(tokens);
-
-    // TODO ricardo next optimization. do not use peekable, and do not use peek, just iterate and if the token is not operand, break. then match on the operand
 
     while let Some(token) = tokens.next() {
         if token == Token::ClosingParenthesis {
@@ -107,7 +137,7 @@ fn parse_expression(tokens: &mut impl Iterator<Item = Token>) -> u32 {
     return left;
 }
 
-fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> u32 {
+fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> i32 {
     match tokens.next() {
         Some(Token::OpeningParenthesis) => {
             let val = parse_expression(tokens);
@@ -118,11 +148,101 @@ fn parse_primary(tokens: &mut impl Iterator<Item = Token>) -> u32 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[target_feature(enable = "avx512bw")]
+unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<usize> {
+    let mut final_indices = Vec::with_capacity(num_splits);
+    if num_splits == 0 {
+        return final_indices;
+    }
+
+    let chunk_size = input.len() / (num_splits + 1);
+    let mut target_idx = 1;
+    let mut last_op_at_depth_zero = 0;
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    let len = input.len();
+
+    let open_parens = _mm512_set1_epi8(b'(' as i8);
+    let close_parens = _mm512_set1_epi8(b')' as i8);
+    let pluses = _mm512_set1_epi8(b'+' as i8);
+
+    while i + 64 <= len {
+        if final_indices.len() >= num_splits {
+            break;
+        }
+        let chunk = _mm512_loadu_si512(input.as_ptr().add(i) as *const _);
+        let open_mask = _mm512_cmpeq_epi8_mask(chunk, open_parens);
+        let close_mask = _mm512_cmpeq_epi8_mask(chunk, close_parens);
+        let plus_mask = _mm512_cmpeq_epi8_mask(chunk, pluses);
+
+        // Only consider parens and '+' as interesting
+        let mut all_interesting_mask = open_mask | close_mask | plus_mask;
+
+        let ideal_pos = target_idx * chunk_size;
+
+        while all_interesting_mask != 0 {
+            let j = all_interesting_mask.trailing_zeros() as usize;
+            let current_idx = i + j;
+            if (open_mask >> j) & 1 == 1 {
+                depth += 1;
+            } else if (close_mask >> j) & 1 == 1 {
+                depth -= 1;
+            } else {
+                if depth == 0 {
+                    last_op_at_depth_zero = current_idx;
+                    if current_idx >= ideal_pos {
+                        final_indices.push(current_idx);
+                        target_idx += 1;
+                        if final_indices.len() >= num_splits {
+                            break;
+                        }
+                    }
+                }
+            }
+            all_interesting_mask &= all_interesting_mask - 1;
+        }
+        i += 64;
+    }
+
+    let ideal_pos = target_idx * chunk_size;
+
+    // Scalar remainder
+    while i < len && final_indices.len() < num_splits {
+        let char_byte = *input.get_unchecked(i);
+        if char_byte == b'(' {
+            depth += 1;
+        } else if char_byte == b')' {
+            depth -= 1;
+        } else if char_byte == b'+' {
+            // Only check for '+'
+            if depth == 0 {
+                last_op_at_depth_zero = i;
+                if i >= ideal_pos {
+                    final_indices.push(i);
+                    target_idx += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Fill any remaining splits with the last found operator
+    while final_indices.len() < num_splits && last_op_at_depth_zero > 0 {
+        final_indices.push(last_op_at_depth_zero);
+    }
+
+    final_indices
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    Operand(u32),
+    Operand(i32),
     Plus,
     Minus,
     OpeningParenthesis,
     ClosingParenthesis,
 }
+
+// after this commit we can try mmap2, because know we are performing 2 passes, maybe it is better

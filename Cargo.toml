@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 
 dhat = "0.3.2"
+rayon = "1.10.0"
