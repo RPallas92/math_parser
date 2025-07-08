@@ -3,22 +3,21 @@ use std::fs;
 use std::io::Result;
 use std::time::Instant;
 
-// We must use the x86-64 architecture for AVX-512.
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
 const NUM_THREADS: usize = 8;
 
-/*#[cfg(debug_assertions)]
+#[cfg(debug_assertions)]
 use dhat;
 
 #[cfg(debug_assertions)]
 #[global_allocator]
-static ALLOCATOR: dhat::Alloc = dhat::Alloc;*/
+static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 
 fn main() -> Result<()> {
-    /*#[cfg(debug_assertions)]
-    let _profiler = dhat::Profiler::new_heap();*/
+    #[cfg(debug_assertions)]
+    let _profiler = dhat::Profiler::new_heap();
     let total_start = Instant::now();
 
     let mut step_start = Instant::now();
@@ -45,7 +44,6 @@ fn read_input_file() -> Result<Vec<u8>> {
     fs::read("data/input.txt")
 }
 
-/// Orchestrates parallel processing.
 fn parallel_eval(input: &[u8], num_threads: usize) -> i32 {
     if num_threads <= 1 || input.len() < 1000 {
         return eval(input);
@@ -177,7 +175,6 @@ unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<u
         let close_mask = _mm512_cmpeq_epi8_mask(chunk, close_parens);
         let plus_mask = _mm512_cmpeq_epi8_mask(chunk, pluses);
 
-        // Only consider parens and '+' as interesting
         let mut all_interesting_mask = open_mask | close_mask | plus_mask;
 
         let ideal_pos = target_idx * chunk_size;
@@ -216,7 +213,6 @@ unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<u
         } else if char_byte == b')' {
             depth -= 1;
         } else if char_byte == b'+' {
-            // Only check for '+'
             if depth == 0 {
                 last_op_at_depth_zero = i;
                 if i >= ideal_pos {
@@ -244,5 +240,3 @@ enum Token {
     OpeningParenthesis,
     ClosingParenthesis,
 }
-
-// after this commit we can try mmap2, because know we are performing 2 passes, maybe it is better
