@@ -24,18 +24,10 @@ Memory profiling with ´dhat´. The resulting JSON file can be viewed on https:/
 
 
 
-
-
-
 SIMD
 
 ```
 rustup toolchain install nightly
-
-
-
-
-
 rustup run nightly cargo build --release && ./target/release/parser
 
 ```
