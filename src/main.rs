@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::fs;
+use std::fs::File;
 use std::io::Result;
 use std::time::Instant;
 
@@ -7,6 +7,7 @@ use std::time::Instant;
 use std::arch::x86_64::*;
 
 const NUM_THREADS: usize = 8;
+use memmap2::Mmap;
 
 #[cfg(debug_assertions)]
 use dhat;
@@ -40,8 +41,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn read_input_file() -> Result<Vec<u8>> {
-    fs::read("data/input.txt")
+fn read_input_file() -> Result<Mmap> {
+    let file = File::open("data/input.txt")?;
+    unsafe { Mmap::map(&file) }
 }
 
 fn parallel_eval(input: &[u8], num_threads: usize) -> i32 {
@@ -166,7 +168,7 @@ unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<u
     let close_parens = _mm512_set1_epi8(b')' as i8);
     let pluses = _mm512_set1_epi8(b'+' as i8);
 
-    while i + 64 <= len {
+    'outer: while i + 64 <= len {
         if final_indices.len() >= num_splits {
             break;
         }
@@ -176,12 +178,11 @@ unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<u
         let plus_mask = _mm512_cmpeq_epi8_mask(chunk, pluses);
 
         let mut all_interesting_mask = open_mask | close_mask | plus_mask;
-
         let ideal_pos = target_idx * chunk_size;
 
         while all_interesting_mask != 0 {
             let j = all_interesting_mask.trailing_zeros() as usize;
-            let current_idx = i + j;
+            let current_idx = i + j; // + j because the mask is a u64 little endian, so trailing zeros are the leading 0 in reality
             if (open_mask >> j) & 1 == 1 {
                 depth += 1;
             } else if (close_mask >> j) & 1 == 1 {
@@ -193,7 +194,7 @@ unsafe fn find_best_split_indices_simd(input: &[u8], num_splits: usize) -> Vec<u
                         final_indices.push(current_idx);
                         target_idx += 1;
                         if final_indices.len() >= num_splits {
-                            break;
+                            break 'outer;
                         }
                     }
                 }
